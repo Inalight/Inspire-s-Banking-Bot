@@ -49,8 +49,6 @@ COLOR_WARNING = discord.Color.orange()
 COLOR_ERROR = discord.Color.red()
 COLOR_INFO = discord.Color.from_rgb(255, 255, 255)  # White
 
-### User Commands ###
-
 # Send DM
 async def send_dm(user: discord.User, title: str, description: str, color: discord.Color):
     try:
@@ -58,6 +56,8 @@ async def send_dm(user: discord.User, title: str, description: str, color: disco
         await user.send(embed=embed)
     except discord.Forbidden:
         print(f"Could not send DM to {user}. They may have DMs disabled.")
+
+### User Commands ###
 
 # Register account
 @bot.tree.command(name="register", description="Register a new bank account.")
@@ -276,105 +276,69 @@ async def transactions(interaction: discord.Interaction):
 ### Admin Commands ###
 
 # Approve deposit
-@bot.tree.command(name="approve_deposit", description="Approve a deposit request.")
+@bot.tree.command(name="approve", description="Approve a deposit or withdrawal request.")
 @app_commands.describe(request_id="Request ID to approve")
-async def approve_deposit(interaction: discord.Interaction, request_id: int):
-    c.execute("SELECT * FROM pending_requests WHERE id=? AND type='deposit'", (request_id,))
+async def approve(interaction: discord.Interaction, request_id: int):
+    c.execute("SELECT * FROM pending_requests WHERE id=?", (request_id,))
     request = c.fetchone()
     if request:
         user_id = request[1]
         amount = request[2]
-
+        request_type = request[2]  # 'deposit' or 'withdraw'
         c.execute("SELECT * FROM accounts WHERE user_id=?", (user_id,))
         account = c.fetchone()
         if account:
-            new_balance = account[2] + amount
-            c.execute("UPDATE accounts SET balance=? WHERE user_id=?", (new_balance, user_id))
-            c.execute("DELETE FROM pending_requests WHERE id=?", (request_id,))
-            c.execute("INSERT INTO transactions (user_id, type, amount, date) VALUES (?, 'deposit', ?, ?)",
-                      (user_id, amount, datetime.now().isoformat()))
+            if request_type == 'deposit':
+                new_balance = account[2] + amount
+                c.execute("UPDATE accounts SET balance=? WHERE user_id=?", (new_balance, user_id))
+                c.execute("DELETE FROM pending_requests WHERE id=?", (request_id,))
+                c.execute("INSERT INTO transactions (user_id, type, amount, date) VALUES (?, 'deposit', ?, ?)",
+                          (user_id, amount, datetime.now().isoformat()))
+            elif request_type == 'withdraw':
+                if account[2] >= amount:
+                    new_balance = account[2] - amount
+                    c.execute("UPDATE accounts SET balance=? WHERE user_id=?", (new_balance, user_id))
+                    c.execute("DELETE FROM pending_requests WHERE id=?", (request_id,))
+                    c.execute("INSERT INTO transactions (user_id, type, amount, date) VALUES (?, 'withdrawal', ?, ?)",
+                              (user_id, -amount, datetime.now().isoformat()))
+                else:
+                    embed = discord.Embed(
+                        title="Insufficient Funds",
+                        description="The account does not have enough funds to complete this withdrawal.",
+                        color=COLOR_ERROR
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
             conn.commit()
 
             embed = discord.Embed(
-                title="Deposit Approved",
-                description=f"Deposit request ID {request_id} has been approved and the funds have been added to the account.",
+                title="Request Approved",
+                description=f"Request ID {request_id} has been approved.",
                 color=COLOR_SUCCESS
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             # Send DM to the user
             user = await bot.fetch_user(user_id)
-            await send_dm(user, "Deposit Approved", f"Your deposit request ID {request_id} has been approved and the funds have been added to your account.", COLOR_SUCCESS)
+            await send_dm(user, "Request Approved", f"Your request ID {request_id} has been approved.", COLOR_SUCCESS)
         else:
             embed = discord.Embed(
                 title="Account Not Found",
-                description="The account associated with this deposit request was not found.",
+                description="The account associated with this request was not found.",
                 color=COLOR_ERROR
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
     else:
         embed = discord.Embed(
             title="Request Not Found",
-            description="Deposit request not found. Please check the request ID and try again.",
+            description="Request not found. Please check the request ID and try again.",
             color=COLOR_ERROR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# Approve withdrawal
-@bot.tree.command(name="approve_withdrawal", description="Approve a withdrawal request.")
-@app_commands.describe(request_id="Request ID to approve")
-async def approve_withdrawal(interaction: discord.Interaction, request_id: int):
-    c.execute("SELECT * FROM pending_requests WHERE id=? AND type='withdraw'", (request_id,))
-    request = c.fetchone()
-    if request:
-        user_id = request[1]
-        amount = request[2]
-
-        c.execute("SELECT * FROM accounts WHERE user_id=?", (user_id,))
-        account = c.fetchone()
-        if account:
-            if account[2] >= amount:
-                new_balance = account[2] - amount
-                c.execute("UPDATE accounts SET balance=? WHERE user_id=?", (new_balance, user_id))
-                c.execute("DELETE FROM pending_requests WHERE id=?", (request_id,))
-                c.execute("INSERT INTO transactions (user_id, type, amount, date) VALUES (?, 'withdrawal', ?, ?)",
-                          (user_id, -amount, datetime.now().isoformat()))
-                conn.commit()
-
-                embed = discord.Embed(
-                    title="Withdrawal Approved",
-                    description=f"Withdrawal request ID {request_id} has been approved and the funds have been withdrawn from the account.",
-                    color=COLOR_SUCCESS
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                # Send DM to the user
-                user = await bot.fetch_user(user_id)
-                await send_dm(user, "Withdrawal Approved", f"Your withdrawal request ID {request_id} has been approved and the funds have been withdrawn from your account.", COLOR_SUCCESS)
-            else:
-                embed = discord.Embed(
-                    title="Insufficient Funds",
-                    description="The account does not have enough funds to complete this withdrawal.",
-                    color=COLOR_ERROR
-                )
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        else:
-            embed = discord.Embed(
-                title="Account Not Found",
-                description="The account associated with this withdrawal request was not found.",
-                color=COLOR_ERROR
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-    else:
-        embed = discord.Embed(
-            title="Request Not Found",
-            description="Withdrawal request not found. Please check the request ID and try again.",
-            color=COLOR_ERROR
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# Deny request
-@bot.tree.command(name="deny_request", description="Deny a pending request.")
-@app_commands.describe(request_id="Request ID to deny")
-async def deny_request(interaction: discord.Interaction, request_id: int):
+# Reject request
+@bot.tree.command(name="reject", description="Reject a deposit or withdrawal request.")
+@app_commands.describe(request_id="Request ID to reject")
+async def reject(interaction: discord.Interaction, request_id: int):
     c.execute("SELECT * FROM pending_requests WHERE id=?", (request_id,))
     request = c.fetchone()
     if request:
@@ -382,19 +346,200 @@ async def deny_request(interaction: discord.Interaction, request_id: int):
         conn.commit()
 
         embed = discord.Embed(
-            title="Request Denied",
-            description=f"Request ID {request_id} has been denied and removed.",
+            title="Request Rejected",
+            description=f"Request ID {request_id} has been rejected and removed.",
             color=COLOR_WARNING
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         # Send DM to the user
         user_id = request[1]
         user = await bot.fetch_user(user_id)
-        await send_dm(user, "Request Denied", f"Your request ID {request_id} has been denied.", COLOR_WARNING)
+        await send_dm(user, "Request Rejected", f"Your request ID {request_id} has been rejected.", COLOR_WARNING)
     else:
         embed = discord.Embed(
             title="Request Not Found",
             description="Request not found. Please check the request ID and try again.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# View pending requests
+@bot.tree.command(name="view_requests", description="View all pending requests.")
+async def view_requests(interaction: discord.Interaction):
+    c.execute("SELECT * FROM pending_requests WHERE status='pending'")
+    requests = c.fetchall()
+    if requests:
+        embed = discord.Embed(
+            title="Pending Requests",
+            color=COLOR_INFO
+        )
+        for req in requests:
+            embed.add_field(name=f"Request ID: {req[0]}", value=f"Type: {req[2]}, Amount: {req[3]}, Date: {req[5]}", inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        embed = discord.Embed(
+            title="No Pending Requests",
+            description="There are no pending requests at the moment.",
+            color=COLOR_WARNING
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Get info about a specific request
+@bot.tree.command(name="request_info", description="Get info about a specific request.")
+@app_commands.describe(request_id="Request ID to get info about")
+async def request_info(interaction: discord.Interaction, request_id: int):
+    c.execute("SELECT * FROM pending_requests WHERE id=?", (request_id,))
+    request = c.fetchone()
+    if request:
+        embed = discord.Embed(
+            title=f"Request ID: {request_id}",
+            color=COLOR_INFO
+        )
+        embed.add_field(name="Type", value=request[2], inline=False)
+        embed.add_field(name="Amount", value=request[3], inline=False)
+        embed.add_field(name="Status", value=request[4], inline=False)
+        embed.add_field(name="Date", value=request[5], inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        embed = discord.Embed(
+            title="Request Not Found",
+            description="Request not found. Please check the request ID and try again.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Set balance for a specific user
+@bot.tree.command(name="setbalance", description="Set the balance for a specific user.")
+@app_commands.describe(user="User ID", amount="Amount to set")
+async def setbalance(interaction: discord.Interaction, user: int, amount: float):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            title="Permission Denied",
+            description="You do not have the required permissions to use this command.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    c.execute("SELECT * FROM accounts WHERE user_id=?", (user,))
+    account = c.fetchone()
+    if account:
+        c.execute("UPDATE accounts SET balance=? WHERE user_id=?", (amount, user))
+        conn.commit()
+
+        embed = discord.Embed(
+            title="Balance Updated",
+            description=f"Balance for user ID {user} has been set to {amount:.2f}.",
+            color=COLOR_SUCCESS
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        embed = discord.Embed(
+            title="Account Not Found",
+            description="The account associated with this user ID was not found.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Lock account
+@bot.tree.command(name="lock", description="Lock a user’s account.")
+@app_commands.describe(user="User ID to lock")
+async def lock(interaction: discord.Interaction, user: int):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            title="Permission Denied",
+            description="You do not have the required permissions to use this command.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    # For simplicity, we'll just set the balance to -1 as an indication of lock
+    c.execute("SELECT * FROM accounts WHERE user_id=?", (user,))
+    account = c.fetchone()
+    if account:
+        c.execute("UPDATE accounts SET balance=? WHERE user_id=?", (-1, user))
+        conn.commit()
+
+        embed = discord.Embed(
+            title="Account Locked",
+            description=f"Account for user ID {user} has been locked.",
+            color=COLOR_WARNING
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        embed = discord.Embed(
+            title="Account Not Found",
+            description="The account associated with this user ID was not found.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Unlock account
+@bot.tree.command(name="unlock", description="Unlock a user’s account.")
+@app_commands.describe(user="User ID to unlock")
+async def unlock(interaction: discord.Interaction, user: int):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            title="Permission Denied",
+            description="You do not have the required permissions to use this command.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    c.execute("SELECT * FROM accounts WHERE user_id=?", (user,))
+    account = c.fetchone()
+    if account:
+        # Reset balance to $0 on unlock
+        c.execute("UPDATE accounts SET balance=? WHERE user_id=?", (0.0, user))
+        conn.commit()
+
+        embed = discord.Embed(
+            title="Account Unlocked",
+            description=f"Account for user ID {user} has been unlocked.",
+            color=COLOR_SUCCESS
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        embed = discord.Embed(
+            title="Account Not Found",
+            description="The account associated with this user ID was not found.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Reset account balance
+@bot.tree.command(name="reset", description="Reset a user’s account balance to $0.")
+@app_commands.describe(user="User ID to reset")
+async def reset(interaction: discord.Interaction, user: int):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            title="Permission Denied",
+            description="You do not have the required permissions to use this command.",
+            color=COLOR_ERROR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    c.execute("SELECT * FROM accounts WHERE user_id=?", (user,))
+    account = c.fetchone()
+    if account:
+        c.execute("UPDATE accounts SET balance=? WHERE user_id=?", (0.0, user))
+        conn.commit()
+
+        embed = discord.Embed(
+            title="Balance Reset",
+            description=f"Balance for user ID {user} has been reset to $0.",
+            color=COLOR_SUCCESS
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        embed = discord.Embed(
+            title="Account Not Found",
+            description="The account associated with this user ID was not found.",
             color=COLOR_ERROR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
